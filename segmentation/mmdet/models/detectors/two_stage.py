@@ -377,7 +377,10 @@ class TwoStageDetector(BaseDetector, RPNTestMixin, BBoxTestMixin,
                                    self.bbox_head.num_classes)
 
         if not self.with_mask:
-            return bbox_results
+            if not dynamic_input:
+                return bbox_results
+            else:
+                return bbox_results, gate_activations
         else:
             segm_results = self.simple_test_mask(
                 x, img_meta, det_bboxes, det_labels, rescale=rescale)
