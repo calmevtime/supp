@@ -23,39 +23,6 @@ PAD_MOD = {'constant': cv2.BORDER_CONSTANT,
            'symmetric': cv2.BORDER_REFLECT
            }
 
-def dct_flatten_2d(img, new=True):
-    height, width, channel = img.shape
-    N = int(math.sqrt(channel))
-    height_resized, width_resized = height * N, width * N
-
-    # Do 8x8 DCT on image (in-place)
-    if new:
-        img = img.reshape((height, width, N, N)).reshape(-1, N, N).astype(dtype='float32')
-        img_resized = unblockshaped(img, height_resized, width_resized)
-    else:
-        img_resized = np.zeros((height_resized, width_resized), np.float32)
-        for i in range(height):
-            for j in range(width):
-                img_resized[i*N:(i+1)*N, j*N:(j+1)*N] = img[i, j].reshape(N, N)
-    return img_resized
-
-def to_ycrcb(img):
-    img = cv2.cvtColor(img, cv2.COLOR_BGR2YCrCb)
-    return img
-
-
-def chroma_subsample(img, cuda=False):
-    SSH, SSV = 2, 2
-    if cuda:
-        img = cp.array(img)
-    crf = cv2.boxFilter(img[:, :, 1], ddepth=-1, ksize=(2, 2))
-    cbf = cv2.boxFilter(img[:, :, 2], ddepth=-1, ksize=(2, 2))
-    crsub = crf[::SSV, ::SSH]
-    cbsub = cbf[::SSV, ::SSH]
-    imSub = [img[:, :, 0], cbsub, crsub]
-
-    return imSub
-
 def transform_dct(img, encoder):
     if img.dtype != 'uint8':
         img = np.ascontiguousarray(img, dtype="uint8")
@@ -63,67 +30,6 @@ def transform_dct(img, encoder):
     dct_y, dct_cb, dct_cr = loads(img)  # 28
     return dct_y, dct_cb, dct_cr
 
-def make_quantization_table():
-    QY=np.array([[16,11,10,16,24,40,51,61],
-                             [12,12,14,19,26,48,60,55],
-                             [14,13,16,24,40,57,69,56],
-                             [14,17,22,29,51,87,80,62],
-                             [18,22,37,56,68,109,103,77],
-                             [24,35,55,64,81,104,113,92],
-                             [49,64,78,87,103,121,120,101],
-                             [72,92,95,98,112,100,103,99]])
-
-    QC=np.array([[17,18,24,47,99,99,99,99],
-                             [18,21,26,66,99,99,99,99],
-                             [24,26,56,99,99,99,99,99],
-                             [47,66,99,99,99,99,99,99],
-                             [99,99,99,99,99,99,99,99],
-                             [99,99,99,99,99,99,99,99],
-                             [99,99,99,99,99,99,99,99],
-                             [99,99,99,99,99,99,99,99]])
-
-    QF=99.0
-    if QF < 50 and QF > 1:
-            scale = np.floor(5000/QF)
-    elif QF < 100:
-            scale = 200-2*QF
-    else:
-            print("Quality Factor must be in the range [1..99]")
-    scale=scale/100.0
-    Q=[QY*scale,QC*scale,QC*scale]
-    return Q
-
-def to_dct(imSub, B=8, quantize=False):
-    TransAll = []
-    if quantize:
-        TransAllQuant = []
-        Q = make_quantization_table()
-
-    for idx, channel in enumerate(imSub):
-        channelrows = channel.shape[0]
-        channelcols = channel.shape[1]
-        Trans = np.zeros((channelrows, channelcols), np.float32)
-        if quantize:
-            TransQuant = np.zeros((channelrows, channelcols), np.float32)
-        blocksV = channelrows // B
-        blocksH = channelcols // B
-        vis0 = np.zeros((channelrows, channelcols), np.float32)
-        vis0[:channelrows, :channelcols] = channel
-        vis0 = vis0 - 128
-        for row in range(blocksV):
-            for col in range(blocksH):
-                currentblock = cv2.dct(vis0[row * B:(row + 1) * B, col * B:(col + 1) * B])
-                Trans[row * B:(row + 1) * B, col * B:(col + 1) * B] = currentblock
-                if quantize:
-                    TransQuant[row * B:(row + 1) * B, col * B:(col + 1) * B] = np.round(currentblock / Q[idx])
-        TransAll.append(Trans)
-        if quantize:
-            TransAllQuant.append(TransQuant)
-
-    if quantize:
-        return  TransAllQuant
-    else:
-        return TransAll
 
 def to_tensor_dct(img):
     """Converts a numpy.ndarray (H x W x C) in the range
@@ -288,43 +194,6 @@ def resize(img, size, interpolation='BILINEAR'):
         oh, ow = size
         return cv2.resize(img, dsize=(int(ow), int(oh)), interpolation=INTER_MODE[interpolation])
 
-def resize_dct(img, size, interpolation='BILINEAR'):
-    """Resize the input CV Image to the given size.
-
-    Args:
-        img (np.ndarray): Image to be resized.
-        size (tuple or int): Desired output size. If size is a sequence like
-            (h, w), the output size will be matched to this. If size is an int,
-            the smaller edge of the image will be matched to this number maintaing
-            the aspect ratio. i.e, if height > width, then image will be rescaled to
-            (size * height / width, size)
-        interpolation (str, optional): Desired interpolation. Default is ``BILINEAR``
-
-    Returns:
-        cv Image: Resized image.
-    """
-    if not _is_numpy_image(img):
-        raise TypeError('img should be CV Image. Got {}'.format(type(img)))
-    if not (isinstance(size, int) or (isinstance(size, collections.Iterable) and len(size) == 2)):
-        raise TypeError('Got inappropriate size arg: {}'.format(size))
-
-    if isinstance(size, int):
-        h, w, c = img.shape
-        if (w <= h and w == size) or (h <= w and h == size):
-            return img
-        if w < h:
-            ow = size
-            oh = int(size * h / w)
-            return cv2.resize(img, dsize=(ow, oh), interpolation=INTER_MODE[interpolation])
-        else:
-            oh = size
-            ow = int(size * w / h)
-            return cv2.resize(img, dsize=(ow, oh), interpolation=INTER_MODE[interpolation])
-    else:
-        oh, ow = size
-        return cv2.resize(img, dsize=(int(ow), int(oh)), interpolation=INTER_MODE[interpolation])
-
-
 def to_rgb_bgr(pic):
     """Converts a color image stored in BGR sequence to RGB (BGR to RGB)
     or stored in RGB sequence to BGR (RGB to BGR).
@@ -474,28 +343,6 @@ def resized_crop(img, i, j, h, w, size, interpolation='BILINEAR'):
     img = crop(img, i, j, h, w)
     # cv2.imwrite('/mnt/ssd/kai.x/work/code/iftc/datasets/cvtransforms/test/crop.jpg', img)
     img = resize(img, size, interpolation)
-    # cv2.imwrite('/mnt/ssd/kai.x/work/code/iftc/datasets/cvtransforms/test/resize.jpg', img)
-    return img
-
-def resized_crop_dct(img, i, j, h, w, size, interpolation='BILINEAR'):
-    """Crop the given CV Image and resize it to desired size. Notably used in RandomResizedCrop.
-
-    Args:
-        img (np.ndarray): Image to be cropped.
-        i: Upper pixel coordinate.
-        j: Left pixel coordinate.
-        h: Height of the cropped image.
-        w: Width of the cropped image.
-        size (sequence or int): Desired output size. Same semantics as ``scale``.
-        interpolation (str, optional): Desired interpolation. Default is
-            ``BILINEAR``.
-    Returns:
-        np.ndarray: Cropped image.
-    """
-    assert _is_numpy_image(img), 'img should be CV Image'
-    img = crop(img, i, j, h, w)
-    # cv2.imwrite('/mnt/ssd/kai.x/work/code/iftc/datasets/cvtransforms/test/crop.jpg', img)
-    img = resize_dct(img, size, interpolation)
     # cv2.imwrite('/mnt/ssd/kai.x/work/code/iftc/datasets/cvtransforms/test/resize.jpg', img)
     return img
 
