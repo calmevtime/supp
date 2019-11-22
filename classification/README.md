@@ -18,10 +18,8 @@ Classification on ImageNet with PyTorch.
   ```
   bash setup.sh
   ```
-* Clone recursively
-  ```
-  git clone --recursive https://github.com/calmevtime/supp_cvpr2020
-  ```
+* Download the entire repo
+
 * Download pretrained [models][1] and extract to [`pretrained`](pretrained). The folder structure should look like this:
 ```
 pretrained
